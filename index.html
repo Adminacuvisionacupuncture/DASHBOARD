@@ -236,6 +236,15 @@ function ymdLocal(d) {
   return local.toISOString().slice(0, 10);
 }
 
+// Flatpickr's dateFormat is set to "M j, Y" for display, which means any
+// string we hand it (minDate/maxDate/setDate) gets parsed using that same
+// format — plain "YYYY-MM-DD" strings fail silently ("Invalid date provided")
+// and no date ever actually gets selected. Always pass real Date objects in.
+function parseYmd(str) {
+  const [y, m, d] = str.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
 function applyPreset(preset) {
   const end = todayStr();
   let start;
@@ -245,7 +254,7 @@ function applyPreset(preset) {
   else if (preset === "all") start = earliestDataDate || daysAgoStr(90);
   else return; // "custom" - user is picking manually on the calendar
   suppressPickerEvent = true;
-  picker.setDate([start, end], false);
+  picker.setDate([parseYmd(start), parseYmd(end)], false);
   suppressPickerEvent = false;
   const range = currentRange();
   if (range) loadDashboard(range.start, range.end);
@@ -318,8 +327,8 @@ document.getElementById("rangeSelect").addEventListener("change", (e) => {
     picker = flatpickr("#dateRange", {
       mode: "range",
       dateFormat: "M j, Y",
-      minDate: earliestDataDate,
-      maxDate: todayStr(),
+      minDate: parseYmd(earliestDataDate),
+      maxDate: parseYmd(todayStr()),
       showMonths: 2,
       onChange: (selectedDates) => {
         if (suppressPickerEvent) return;
