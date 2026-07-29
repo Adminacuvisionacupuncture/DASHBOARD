@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>EHI Ads Dashboard — Meta</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --card: #171a21;
+    --border: #262a33;
+    --text: #e8eaed;
+    --muted: #9aa0aa;
+    --accent: #4f8cff;
+    --good: #3ecf8e;
+    --warn: #ffb020;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 32px 24px 60px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 28px; flex-wrap: wrap; gap: 12px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  select, button, input[type="date"] {
+    background: var(--card);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  input[type="date"] { color-scheme: dark; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .date-sep { color: var(--muted); font-size: 13px; }
+  #dateRange { min-width: 190px; text-align: center; }
+  .flatpickr-calendar { background: var(--card); border: 1px solid var(--border); box-shadow: none; }
+  .flatpickr-months, .flatpickr-weekdays, .flatpickr-current-month, .flatpickr-day { color: var(--text) !important; }
+  .flatpickr-day.flatpickr-disabled { color: #55595f !important; }
+  .flatpickr-day.inRange { background: rgba(79,140,255,0.18); border-color: transparent; box-shadow: none; }
+  .flatpickr-day.selected, .flatpickr-day.startRange, .flatpickr-day.endRange { background: var(--accent); border-color: var(--accent); }
+  .info-banner { background: rgba(255,176,32,0.1); border: 1px solid rgba(255,176,32,0.3); color: #ffcf7a; border-radius: 8px; padding: 10px 14px; font-size: 12px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-bottom: 28px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 18px 16px;
+  }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
+  .card .value { font-size: 26px; font-weight: 600; }
+  .card .note { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  section { margin-bottom: 32px; }
+  h2 { font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 0 0 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .status { font-size: 12px; color: var(--muted); }
+  .status.err { color: #ff6b6b; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; background: rgba(79,140,255,0.15); color: var(--accent); }
+  .footer-note { color: var(--muted); font-size: 12px; margin-top: 40px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Eye Health Institute — Ads Dashboard <span class="pill">Meta</span></h1>
+      <div class="sub" id="rangeLabel">Loading...</div>
+    </div>
+    <div class="controls">
+      <select id="rangeSelect">
+        <option value="7">Last 7 days</option>
+        <option value="30">Last 30 days</option>
+        <option value="90">Last 90 days</option>
+        <option value="all" selected>All time</option>
+        <option value="custom">Custom range</option>
+      </select>
+      <input type="text" id="dateRange" placeholder="Select date range" readonly />
+    </div>
+  </header>
+
+  <div class="status" id="statusLine">Connecting to Supabase...</div>
+
+  <section>
+    <h2>Key Metrics</h2>
+    <div class="grid" id="metricsGrid"></div>
+  </section>
+
+  <section>
+    <h2>Funnel (Meta / COD)</h2>
+    <table id="funnelTable">
+      <thead><tr><th>Stage</th><th>Count</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Daily Spend</h2>
+    <table id="spendTable">
+      <thead><tr><th>Date</th><th>Spend</th><th>Clicks</th><th>Impressions</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <div class="footer-note">Meta only, Phase 1. TikTok and Google Ads will appear here once their funnels are live.</div>
+</div>
+
+<script>
+const SUPABASE_URL = "https://animqnieyznsetkcbnlx.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFuaW1xbmlleXpuc2V0a2Nibmx4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUyMzk0NDksImV4cCI6MjEwMDgxNTQ0OX0.aK-X9k39jKYSnQW837r8iC9J5E8irl2LKqOhOgfCmyE";
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const fmtMoney = (n) => n === null || n === undefined || isNaN(n) ? "—" : "$" + n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+const fmtPct = (n) => n === null || n === undefined || isNaN(n) ? "—" : (n * 100).toFixed(1) + "%";
+const fmtNum = (n) => n === null || n === undefined || isNaN(n) ? "—" : n.toLocaleString();
+const fmtX = (n) => n === null || n === undefined || isNaN(n) ? "—" : n.toFixed(2) + "x";
+
+function metricCard(label, value, note) {
+  return `<div class="card"><div class="label">${label}</div><div class="value">${value}</div>${note ? `<div class="note">${note}</div>` : ""}</div>`;
+}
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function daysAgoStr(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+// Cache of the earliest date we actually have spend data for, used as the
+// floor for "All time" and as the default lower bound for the date pickers.
+let earliestDataDate = null;
+
+const FILE_ORIGIN_HINT = "This page may be blocked from making network requests because it's open as a local file (file://). Try: (1) opening the deployed Netlify URL instead, or (2) running a local server in this folder, e.g. `python3 -m http.server 8000` then visiting http://localhost:8000/index.html.";
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timed out after ${ms / 1000}s waiting for ${label}. ${FILE_ORIGIN_HINT}`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function getEarliestDate() {
+  if (earliestDataDate) return earliestDataDate;
+  try {
+    const { data, error } = await withTimeout(
+      sb.from("ad_spend_daily").select("date").order("date", { ascending: true }).limit(1),
+      10000, "Supabase (earliest date)"
+    );
+    if (!error && data && data.length > 0) {
+      earliestDataDate = data[0].date;
+    } else {
+      earliestDataDate = daysAgoStr(90);
+    }
+  } catch (e) {
+    document.getElementById("statusLine").textContent = "Error: " + e.message;
+    document.getElementById("statusLine").className = "status err";
+    console.error(e);
+    earliestDataDate = daysAgoStr(90);
+  }
+  return earliestDataDate;
+}
+
+async function loadDashboard(startDate, endDate) {
+  const statusLine = document.getElementById("statusLine");
+  const rangeLabel = document.getElementById("rangeLabel");
+  statusLine.textContent = "Loading data...";
+  statusLine.className = "status";
+  rangeLabel.textContent = `Showing ${startDate} through ${endDate}`;
+
+  try {
+    const spendQuery = sb.from("ad_spend_daily").select("platform,date,spend,clicks,impressions")
+      .gte("date", startDate).lte("date", endDate).order("date", { ascending: false });
+    const { data: spendRows, error: spendErr } = await withTimeout(spendQuery, 12000, "ad_spend_daily");
+    if (spendErr) throw spendErr;
+
+    const eventsQuery = sb.from("ghl_funnel_events").select("event_type,opportunity_value,event_timestamp")
+      .gte("event_timestamp", startDate).lte("event_timestamp", endDate + "T23:59:59")
+      .order("event_timestamp", { ascending: false });
+    const { data: eventRows, error: eventErr } = await withTimeout(eventsQuery, 12000, "ghl_funnel_events");
+    if (eventErr) throw eventErr;
+
+    render(spendRows || [], eventRows || []);
+    statusLine.textContent = `Last refreshed ${new Date().toLocaleString()} · ${spendRows.length} spend rows · ${eventRows.length} funnel events`;
+  } catch (e) {
+    statusLine.textContent = "Error loading data: " + (e.message || e);
+    statusLine.className = "status err";
+    console.error(e);
+  }
+}
+
+let picker = null; // flatpickr instance, created in init()
+let suppressPickerEvent = false; // avoids re-triggering loadDashboard while we set dates programmatically
+
+function currentRange() {
+  const dates = picker.selectedDates;
+  if (dates.length < 2) return null;
+  return { start: ymdLocal(dates[0]), end: ymdLocal(dates[1]) };
+}
+
+function ymdLocal(d) {
+  const off = d.getTimezoneOffset();
+  const local = new Date(d.getTime() - off * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
+function applyPreset(preset) {
+  const end = todayStr();
+  let start;
+  if (preset === "7") start = daysAgoStr(7);
+  else if (preset === "30") start = daysAgoStr(30);
+  else if (preset === "90") start = daysAgoStr(90);
+  else if (preset === "all") start = earliestDataDate || daysAgoStr(90);
+  else return; // "custom" - user is picking manually on the calendar
+  suppressPickerEvent = true;
+  picker.setDate([start, end], false);
+  suppressPickerEvent = false;
+  const range = currentRange();
+  if (range) loadDashboard(range.start, range.end);
+}
+
+function render(spendRows, eventRows) {
+  const totalSpend = spendRows.reduce((sum, r) => sum + Number(r.spend || 0), 0);
+
+  const counts = {};
+  let totalRevenue = 0;
+  for (const e of eventRows) {
+    counts[e.event_type] = (counts[e.event_type] || 0) + 1;
+    if (e.opportunity_value) totalRevenue += Number(e.opportunity_value);
+  }
+
+  const booked = counts["assessment_booked"] || 0;
+  const showed = counts["assessment_showed"] || 0;
+  const treatmentStarted = counts["treatment_started"] || 0;
+  const acsPurchased = counts["acs_purchased"] || 0;
+  const otherPurchase = counts["purchased_from_ehi_other"] || 0;
+  const newPatients = treatmentStarted; // telehealth + in-office starts
+
+  const costPerBooked = booked > 0 ? totalSpend / booked : null;
+  const showRate = booked > 0 ? showed / booked : null;
+  const bookedToPatientRate = booked > 0 ? newPatients / booked : null;
+  const costPerNewPatient = newPatients > 0 ? totalSpend / newPatients : null;
+  const roas = totalSpend > 0 ? totalRevenue / totalSpend : null;
+  const revenuePerAssessment = booked > 0 ? totalRevenue / booked : null;
+
+  const grid = document.getElementById("metricsGrid");
+  grid.innerHTML = [
+    metricCard("Total Ad Spend", fmtMoney(totalSpend)),
+    metricCard("Cost / Assessment Booked", fmtMoney(costPerBooked), `${fmtNum(booked)} booked`),
+    metricCard("Assessment Show Rate", fmtPct(showRate), `${fmtNum(showed)} showed / ${fmtNum(booked)} booked`),
+    metricCard("Assessment → Patient Rate", fmtPct(bookedToPatientRate), `${fmtNum(newPatients)} started treatment`),
+    metricCard("Cost / New Patient", fmtMoney(costPerNewPatient)),
+    metricCard("ROAS", fmtX(roas), `${fmtMoney(totalRevenue)} revenue tracked`),
+    metricCard("Revenue / Assessment Call", fmtMoney(revenuePerAssessment)),
+  ].join("");
+
+  const funnelBody = document.querySelector("#funnelTable tbody");
+  const funnelRows = [
+    ["Assessment booked", booked],
+    ["Assessment showed", showed],
+    ["Treatment started (telehealth + in-office)", treatmentStarted],
+    ["ACS purchased", acsPurchased],
+    ["Other EHI purchase (supplements / RLT)", otherPurchase],
+  ];
+  funnelBody.innerHTML = funnelRows.map(([label, n]) => `<tr><td>${label}</td><td>${fmtNum(n)}</td></tr>`).join("");
+
+  const spendBody = document.querySelector("#spendTable tbody");
+  spendBody.innerHTML = spendRows.map(r =>
+    `<tr><td>${r.date}</td><td>${fmtMoney(Number(r.spend))}</td><td>${fmtNum(r.clicks)}</td><td>${fmtNum(r.impressions)}</td></tr>`
+  ).join("") || "<tr><td colspan='4'>No spend rows in range</td></tr>";
+}
+
+document.getElementById("rangeSelect").addEventListener("change", (e) => {
+  applyPreset(e.target.value);
+});
+
+(async function init() {
+  await getEarliestDate();
+
+  picker = flatpickr("#dateRange", {
+    mode: "range",
+    dateFormat: "M j, Y",
+    minDate: earliestDataDate,
+    maxDate: todayStr(),
+    showMonths: 2,
+    onChange: (selectedDates) => {
+      if (suppressPickerEvent) return;
+      if (selectedDates.length === 2) {
+        document.getElementById("rangeSelect").value = "custom";
+        loadDashboard(ymdLocal(selectedDates[0]), ymdLocal(selectedDates[1]));
+      }
+    },
+  });
+
+  applyPreset("all");
+})();
+</script>
+</body>
+</html>
