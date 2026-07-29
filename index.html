@@ -86,6 +86,31 @@
   .status.err { color: var(--err); }
   .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; background: rgba(226,138,41,0.15); color: var(--accent-dark); }
   .footer-note { color: var(--muted); font-size: 12px; margin-top: 40px; text-align: center; }
+
+  .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px; }
+  .section-header h2 { margin: 0; }
+  .view-toggle { display: flex; gap: 4px; background: #eef1f6; padding: 4px; border-radius: 10px; }
+  .view-toggle button { border: none; background: transparent; padding: 6px 14px; border-radius: 7px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .view-toggle button:hover { border-color: transparent; color: var(--navy-dark); }
+  .view-toggle button.active { background: var(--card); color: var(--accent-dark); box-shadow: 0 1px 2px rgba(38,52,73,0.1); }
+
+  .cal-month { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(38,52,73,0.05); }
+  .cal-month-title { font-weight: 700; color: var(--navy-dark); font-size: 14px; margin-bottom: 12px; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+  .cal-dow { text-align: center; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding-bottom: 4px; font-weight: 700; }
+  .cal-cell { min-height: 58px; border-radius: 8px; padding: 6px 8px; background: #f8f9fc; border: 1px solid transparent; }
+  .cal-cell.empty { background: transparent; }
+  .cal-cell.has-data { background: rgba(226,138,41,0.09); border-color: rgba(226,138,41,0.25); }
+  .cal-day { font-size: 11px; color: var(--muted); font-weight: 700; }
+  .cal-spend { font-size: 13px; font-weight: 700; color: var(--navy-dark); margin-top: 6px; }
+  .cal-sub { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+  .bucket-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+  .bucket-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; box-shadow: 0 1px 3px rgba(38,52,73,0.05); }
+  .bucket-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
+  .bucket-spend { font-size: 20px; font-weight: 700; color: var(--navy-dark); }
+  .bucket-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .empty-note { color: var(--muted); font-size: 13px; padding: 24px; text-align: center; background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
 </style>
 </head>
 <body>
@@ -127,11 +152,16 @@
   </section>
 
   <section>
-    <h2>Daily Spend</h2>
-    <table id="spendTable">
-      <thead><tr><th>Date</th><th>Spend</th><th>Clicks</th><th>Impressions</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="section-header">
+      <h2>Ad Spend</h2>
+      <div class="view-toggle" id="spendViewToggle">
+        <button data-view="daily" class="active">Daily</button>
+        <button data-view="weekly">Weekly</button>
+        <button data-view="monthly">Monthly</button>
+        <button data-view="yearly">Yearly</button>
+      </div>
+    </div>
+    <div id="spendView"></div>
   </section>
 
   <div class="footer-note">Meta only, Phase 1. TikTok and Google Ads will appear here once their funnels are live.</div>
@@ -265,6 +295,113 @@ function parseYmd(str) {
   return new Date(y, m - 1, d);
 }
 
+// ---------------- Ad Spend view (daily calendar / weekly / monthly / yearly) ----------------
+
+let lastSpendRows = [];
+let spendViewMode = "daily";
+const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+function bucketRows(rows, keyFn) {
+  const map = new Map();
+  for (const r of rows) {
+    const k = keyFn(r.date);
+    if (!map.has(k)) map.set(k, { key: k, spend: 0, clicks: 0, impressions: 0 });
+    const b = map.get(k);
+    b.spend += Number(r.spend || 0);
+    b.clicks += Number(r.clicks || 0);
+    b.impressions += Number(r.impressions || 0);
+  }
+  return Array.from(map.values()).sort((a, b) => b.key.localeCompare(a.key));
+}
+
+function weekStartKey(dateStr) {
+  const d = parseYmd(dateStr);
+  const start = new Date(d);
+  start.setDate(d.getDate() - d.getDay()); // back up to Sunday
+  return ymdLocal(start);
+}
+function monthKey(dateStr) { return dateStr.slice(0, 7); }
+function yearKey(dateStr) { return dateStr.slice(0, 4); }
+
+function weekLabel(key) {
+  const start = parseYmd(key);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  const fmt = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return `Week of ${fmt(start)} – ${fmt(end)}`;
+}
+function monthLabel(key) {
+  const [y, m] = key.split("-").map(Number);
+  return `${MONTH_NAMES[m - 1]} ${y}`;
+}
+function yearLabel(key) { return key; }
+
+function renderBucketCards(buckets, labelFn) {
+  if (buckets.length === 0) return '<div class="empty-note">No spend rows in range</div>';
+  return `<div class="bucket-grid">${buckets.map(b => `
+    <div class="bucket-card">
+      <div class="bucket-label">${labelFn(b.key)}</div>
+      <div class="bucket-spend">${fmtMoney(b.spend)}</div>
+      <div class="bucket-sub">${fmtNum(b.clicks)} clicks · ${fmtNum(b.impressions)} impr.</div>
+    </div>`).join("")}</div>`;
+}
+
+function renderMonthGrid(year, month, byDate) {
+  const firstDay = new Date(year, month, 1);
+  const startWeekday = firstDay.getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  let cells = "";
+  for (let i = 0; i < startWeekday; i++) cells += '<div class="cal-cell empty"></div>';
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const row = byDate.get(dateStr);
+    cells += `<div class="cal-cell ${row ? "has-data" : ""}">
+      <div class="cal-day">${d}</div>
+      ${row ? `<div class="cal-spend">${fmtMoney(Number(row.spend))}</div><div class="cal-sub">${fmtNum(row.clicks)} clicks</div>` : ""}
+    </div>`;
+  }
+  return `<div class="cal-month">
+    <div class="cal-month-title">${MONTH_NAMES[month]} ${year}</div>
+    <div class="cal-grid">
+      <div class="cal-dow">Sun</div><div class="cal-dow">Mon</div><div class="cal-dow">Tue</div><div class="cal-dow">Wed</div><div class="cal-dow">Thu</div><div class="cal-dow">Fri</div><div class="cal-dow">Sat</div>
+      ${cells}
+    </div>
+  </div>`;
+}
+
+function renderDailyCalendar(rows) {
+  if (rows.length === 0) return '<div class="empty-note">No spend rows in range</div>';
+  const byDate = new Map(rows.map(r => [r.date, r]));
+  const dates = rows.map(r => r.date).sort();
+  const minDate = parseYmd(dates[0]);
+  const maxDate = parseYmd(dates[dates.length - 1]);
+  let html = "";
+  const cursor = new Date(maxDate.getFullYear(), maxDate.getMonth(), 1);
+  const floor = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
+  while (cursor >= floor) {
+    html += renderMonthGrid(cursor.getFullYear(), cursor.getMonth(), byDate);
+    cursor.setMonth(cursor.getMonth() - 1);
+  }
+  return html;
+}
+
+function renderSpendSection() {
+  const container = document.getElementById("spendView");
+  if (!container) return;
+  if (spendViewMode === "daily") container.innerHTML = renderDailyCalendar(lastSpendRows);
+  else if (spendViewMode === "weekly") container.innerHTML = renderBucketCards(bucketRows(lastSpendRows, weekStartKey), weekLabel);
+  else if (spendViewMode === "monthly") container.innerHTML = renderBucketCards(bucketRows(lastSpendRows, monthKey), monthLabel);
+  else if (spendViewMode === "yearly") container.innerHTML = renderBucketCards(bucketRows(lastSpendRows, yearKey), yearLabel);
+}
+
+document.getElementById("spendViewToggle").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-view]");
+  if (!btn) return;
+  spendViewMode = btn.dataset.view;
+  document.querySelectorAll("#spendViewToggle button").forEach(b => b.classList.toggle("active", b === btn));
+  renderSpendSection();
+});
+
 function applyPreset(preset) {
   const end = todayStr();
   let start;
@@ -325,10 +462,8 @@ function render(spendRows, eventRows) {
   ];
   funnelBody.innerHTML = funnelRows.map(([label, n]) => `<tr><td>${label}</td><td>${fmtNum(n)}</td></tr>`).join("");
 
-  const spendBody = document.querySelector("#spendTable tbody");
-  spendBody.innerHTML = spendRows.map(r =>
-    `<tr><td>${r.date}</td><td>${fmtMoney(Number(r.spend))}</td><td>${fmtNum(r.clicks)}</td><td>${fmtNum(r.impressions)}</td></tr>`
-  ).join("") || "<tr><td colspan='4'>No spend rows in range</td></tr>";
+  lastSpendRows = spendRows;
+  renderSpendSection();
 }
 
 document.getElementById("rangeSelect").addEventListener("change", (e) => {
