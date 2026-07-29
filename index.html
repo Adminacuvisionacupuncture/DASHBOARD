@@ -118,9 +118,25 @@
 </div>
 
 <script>
+function reportFatal(msg) {
+  const el = document.getElementById("statusLine");
+  if (el) { el.textContent = msg; el.className = "status err"; }
+  console.error(msg);
+}
+window.addEventListener("error", (e) => {
+  reportFatal("Script error: " + (e.message || (e.error && e.error.message) || "unknown error"));
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const reason = e.reason && e.reason.message ? e.reason.message : String(e.reason);
+  reportFatal("Unhandled error: " + reason);
+});
+
 const SUPABASE_URL = "https://animqnieyznsetkcbnlx.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFuaW1xbmlleXpuc2V0a2Nibmx4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUyMzk0NDksImV4cCI6MjEwMDgxNTQ0OX0.aK-X9k39jKYSnQW837r8iC9J5E8irl2LKqOhOgfCmyE";
 
+if (typeof supabase === "undefined") {
+  throw new Error("Supabase JS library failed to load from CDN (cdn.jsdelivr.net) — check network/ad-blocker/content blocker.");
+}
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const fmtMoney = (n) => n === null || n === undefined || isNaN(n) ? "—" : "$" + n.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -291,24 +307,33 @@ document.getElementById("rangeSelect").addEventListener("change", (e) => {
 });
 
 (async function init() {
-  await getEarliestDate();
+  try {
+    await getEarliestDate();
 
-  picker = flatpickr("#dateRange", {
-    mode: "range",
-    dateFormat: "M j, Y",
-    minDate: earliestDataDate,
-    maxDate: todayStr(),
-    showMonths: 2,
-    onChange: (selectedDates) => {
-      if (suppressPickerEvent) return;
-      if (selectedDates.length === 2) {
-        document.getElementById("rangeSelect").value = "custom";
-        loadDashboard(ymdLocal(selectedDates[0]), ymdLocal(selectedDates[1]));
-      }
-    },
-  });
+    if (typeof flatpickr === "undefined") {
+      reportFatal("Flatpickr library failed to load from CDN (cdn.jsdelivr.net) — check network/ad-blocker/content blocker.");
+      return;
+    }
 
-  applyPreset("all");
+    picker = flatpickr("#dateRange", {
+      mode: "range",
+      dateFormat: "M j, Y",
+      minDate: earliestDataDate,
+      maxDate: todayStr(),
+      showMonths: 2,
+      onChange: (selectedDates) => {
+        if (suppressPickerEvent) return;
+        if (selectedDates.length === 2) {
+          document.getElementById("rangeSelect").value = "custom";
+          loadDashboard(ymdLocal(selectedDates[0]), ymdLocal(selectedDates[1]));
+        }
+      },
+    });
+
+    applyPreset("all");
+  } catch (e) {
+    reportFatal("Init failed: " + (e.message || e));
+  }
 })();
 </script>
 </body>
