@@ -429,6 +429,8 @@ function render(spendRows, eventRows) {
 
   const booked = counts["assessment_booked"] || 0;
   const showed = counts["assessment_showed"] || 0;
+  const noShow = counts["assessment_no_show"] || 0;
+  const pending = Math.max(0, booked - showed - noShow); // booked, appointment hasn't happened yet
   const treatmentStarted = counts["treatment_started"] || 0;
   const acsPurchased = counts["acs_purchased"] || 0;
   const otherPurchase = counts["purchased_from_ehi_other"] || 0;
@@ -456,6 +458,8 @@ function render(spendRows, eventRows) {
   const funnelRows = [
     ["Assessment booked", booked],
     ["Assessment showed", showed],
+    ["Assessment no-show", noShow],
+    ["Pending (appointment not yet happened)", pending],
     ["Treatment started (telehealth + in-office)", treatmentStarted],
     ["ACS purchased", acsPurchased],
     ["Other EHI purchase (supplements / RLT)", otherPurchase],
