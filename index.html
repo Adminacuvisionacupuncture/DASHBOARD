@@ -417,24 +417,42 @@ function applyPreset(preset) {
   if (range) loadDashboard(range.start, range.end);
 }
 
+// Exact tags the GHL "conversion tracking" pipeline workflow applies -- this
+// is the authoritative source for true conversions (replaces old guesswork).
+const CONVERSION_LABELS = {
+  "acuvision in office": "In-office treatment purchased",
+  "acuvision remote purchase": "Remote clinic purchased",
+  "acuvision acs in office price": "ACS purchased (in-office add-on)",
+  "acuvision acs sale": "ACS purchased (standalone)",
+  "acuvision ehi shop": "EHI shop purchase",
+};
+// Which conversion tags count as a genuine new treatment patient (vs. an
+// add-on/shop purchase) for the "Assessment -> Patient" funnel metric.
+const NEW_PATIENT_TAGS = new Set(["acuvision in office", "acuvision remote purchase"]);
+
 function render(spendRows, eventRows) {
   const totalSpend = spendRows.reduce((sum, r) => sum + Number(r.spend || 0), 0);
 
   const counts = {};
-  let totalRevenue = 0;
   for (const e of eventRows) {
+    if (e.event_type === "conversion") continue; // tallied separately below, keyed by tag
     counts[e.event_type] = (counts[e.event_type] || 0) + 1;
-    if (e.opportunity_value) totalRevenue += Number(e.opportunity_value);
+  }
+
+  const conversions = eventRows.filter(e => e.event_type === "conversion");
+  const conversionCounts = {};
+  let totalRevenue = 0;
+  let newPatients = 0;
+  for (const c of conversions) {
+    conversionCounts[c.event_tag] = (conversionCounts[c.event_tag] || 0) + 1;
+    if (c.opportunity_value) totalRevenue += Number(c.opportunity_value);
+    if (NEW_PATIENT_TAGS.has(c.event_tag)) newPatients++;
   }
 
   const booked = counts["assessment_booked"] || 0;
   const showed = counts["assessment_showed"] || 0;
   const noShow = counts["assessment_no_show"] || 0;
   const pending = Math.max(0, booked - showed - noShow); // booked, appointment hasn't happened yet
-  const treatmentStarted = counts["treatment_started"] || 0;
-  const acsPurchased = counts["acs_purchased"] || 0;
-  const otherPurchase = counts["purchased_from_ehi_other"] || 0;
-  const newPatients = treatmentStarted; // telehealth + in-office starts
 
   const costPerBooked = booked > 0 ? totalSpend / booked : null;
   const showRate = booked > 0 ? showed / booked : null;
@@ -460,10 +478,10 @@ function render(spendRows, eventRows) {
     ["Assessment showed", showed],
     ["Assessment no-show", noShow],
     ["Pending (appointment not yet happened)", pending],
-    ["Treatment started (telehealth + in-office)", treatmentStarted],
-    ["ACS purchased", acsPurchased],
-    ["Other EHI purchase (supplements / RLT)", otherPurchase],
   ];
+  for (const [tag, label] of Object.entries(CONVERSION_LABELS)) {
+    funnelRows.push([label, conversionCounts[tag] || 0]);
+  }
   funnelBody.innerHTML = funnelRows.map(([label, n]) => `<tr><td>${label}</td><td>${fmtNum(n)}</td></tr>`).join("");
 
   lastSpendRows = spendRows;
