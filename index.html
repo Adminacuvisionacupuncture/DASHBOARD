@@ -164,6 +164,12 @@
     <div>This channel's tracking pipeline hasn't been wired up. It'll appear here once it's live.</div>
   </div>
 
+  <div class="view-toggle" id="subChannelToggle" style="display:none; width: fit-content; margin-bottom: 16px;">
+    <button data-sub="all" class="active">All</button>
+    <button data-sub="normal">Normal</button>
+    <button data-sub="fasttrack">Fast-Track</button>
+  </div>
+
   <section id="metricsSection">
     <h2>Key Metrics</h2>
     <div class="grid" id="metricsGrid"></div>
@@ -243,6 +249,11 @@ let earliestDataDate = null;
 // section of the page renders.
 let currentPlatform = "meta";
 
+// Main Funnel only: "all" | "normal" | "fasttrack" -- filters by which of the
+// two website calendars (AcuVision Assessment Call vs. Fast-Track) a contact
+// booked on.
+let mainFunnelSubChannel = "all";
+
 const FILE_ORIGIN_HINT = "This page may be blocked from making network requests because it's open as a local file (file://). Try: (1) opening the deployed Netlify URL instead, or (2) running a local server in this folder, e.g. `python3 -m http.server 8000` then visiting http://localhost:8000/index.html.";
 
 function withTimeout(promise, ms, label) {
@@ -299,10 +310,13 @@ async function loadDashboard(startDate, endDate) {
       spendRows = data || [];
     }
 
-    const eventsQuery = sb.from("ghl_funnel_events").select("event_type,event_tag,opportunity_value,event_timestamp")
+    let eventsQuery = sb.from("ghl_funnel_events").select("event_type,event_tag,opportunity_value,event_timestamp")
       .eq("source_tag", currentPlatform)
       .gte("event_timestamp", startDate).lte("event_timestamp", endDate + "T23:59:59")
       .order("event_timestamp", { ascending: false });
+    if (currentPlatform === "main_funnel" && mainFunnelSubChannel !== "all") {
+      eventsQuery = eventsQuery.eq("sub_channel", mainFunnelSubChannel);
+    }
     const { data: eventRows, error: eventErr } = await withTimeout(eventsQuery, 25000, "ghl_funnel_events");
     if (eventErr) throw eventErr;
 
@@ -596,12 +610,24 @@ function updatePlatformUI() {
   document.getElementById("metricsSection").style.display = isComingSoon ? "none" : "";
   document.getElementById("funnelSection").style.display = isComingSoon ? "none" : "";
   document.getElementById("adSpendSection").style.display = (currentPlatform === "meta") ? "" : "none";
+  document.getElementById("subChannelToggle").style.display = (currentPlatform === "main_funnel") ? "flex" : "none";
 }
+
+document.getElementById("subChannelToggle").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-sub]");
+  if (!btn) return;
+  mainFunnelSubChannel = btn.dataset.sub;
+  document.querySelectorAll("#subChannelToggle button").forEach(b => b.classList.toggle("active", b === btn));
+  const range = currentRange();
+  if (range) loadDashboard(range.start, range.end);
+});
 
 document.getElementById("platformTabs").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-platform]");
   if (!btn) return;
   currentPlatform = btn.dataset.platform;
+  mainFunnelSubChannel = "all";
+  document.querySelectorAll("#subChannelToggle button").forEach(b => b.classList.toggle("active", b.dataset.sub === "all"));
   document.querySelectorAll("#platformTabs button").forEach(b => b.classList.toggle("active", b === btn));
   updatePlatformUI();
   const range = currentRange();
