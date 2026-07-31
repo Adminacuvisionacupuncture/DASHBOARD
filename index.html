@@ -303,7 +303,7 @@ async function loadDashboard(startDate, endDate) {
       .eq("source_tag", currentPlatform)
       .gte("event_timestamp", startDate).lte("event_timestamp", endDate + "T23:59:59")
       .order("event_timestamp", { ascending: false });
-    const { data: eventRows, error: eventErr } = await withTimeout(eventsQuery, 12000, "ghl_funnel_events");
+    const { data: eventRows, error: eventErr } = await withTimeout(eventsQuery, 25000, "ghl_funnel_events");
     if (eventErr) throw eventErr;
 
     if (currentPlatform === "meta") renderMeta(spendRows, eventRows || []);
