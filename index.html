@@ -111,6 +111,20 @@
   .bucket-spend { font-size: 20px; font-weight: 700; color: var(--navy-dark); }
   .bucket-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
   .empty-note { color: var(--muted); font-size: 13px; padding: 24px; text-align: center; background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
+
+  .platform-tabs { display: flex; gap: 4px; background: #eef1f6; padding: 4px; border-radius: 12px; margin-bottom: 24px; }
+  .platform-tabs button {
+    flex: 1; border: none; background: transparent; padding: 10px 14px; border-radius: 9px;
+    font-size: 12px; font-weight: 700; letter-spacing: .04em; color: var(--muted); cursor: pointer;
+  }
+  .platform-tabs button:hover { border-color: transparent; color: var(--navy-dark); }
+  .platform-tabs button.active { background: var(--card); color: var(--accent-dark); box-shadow: 0 1px 3px rgba(38,52,73,0.1); }
+  .platform-tabs button .tab-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #c3cbd6; margin-right: 6px; vertical-align: middle; }
+  .platform-tabs button.active .tab-dot { background: var(--good); }
+  .platform-tabs button[data-platform="tiktok"] .tab-dot, .platform-tabs button[data-platform="google"] .tab-dot { background: #c3cbd6; }
+
+  .coming-soon { background: var(--card); border: 1px dashed var(--border); border-radius: 14px; padding: 48px 24px; text-align: center; color: var(--muted); }
+  .coming-soon .big { font-size: 16px; font-weight: 700; color: var(--navy-dark); margin-bottom: 6px; }
 </style>
 </head>
 <body>
@@ -136,22 +150,34 @@
     </div>
   </header>
 
+  <div class="platform-tabs" id="platformTabs">
+    <button data-platform="meta" class="active"><span class="tab-dot"></span>META</button>
+    <button data-platform="tiktok"><span class="tab-dot"></span>TIKTOK</button>
+    <button data-platform="google"><span class="tab-dot"></span>GOOGLE ADS</button>
+    <button data-platform="main_funnel"><span class="tab-dot"></span>MAIN FUNNEL</button>
+  </div>
+
   <div class="status" id="statusLine">Connecting to Supabase...</div>
 
-  <section>
+  <div id="comingSoonSection" class="coming-soon" style="display:none">
+    <div class="big">Not built yet</div>
+    <div>This channel's tracking pipeline hasn't been wired up. It'll appear here once it's live.</div>
+  </div>
+
+  <section id="metricsSection">
     <h2>Key Metrics</h2>
     <div class="grid" id="metricsGrid"></div>
   </section>
 
-  <section>
-    <h2>Funnel (Meta / COD)</h2>
+  <section id="funnelSection">
+    <h2 id="funnelHeading">Funnel (Meta / COD)</h2>
     <table id="funnelTable">
       <thead><tr><th>Stage</th><th>Count</th></tr></thead>
       <tbody></tbody>
     </table>
   </section>
 
-  <section>
+  <section id="adSpendSection">
     <div class="section-header">
       <h2>Ad Spend</h2>
       <div class="view-toggle" id="spendViewToggle">
@@ -164,7 +190,7 @@
     <div id="spendView"></div>
   </section>
 
-  <div class="footer-note">Meta only, Phase 1. TikTok and Google Ads will appear here once their funnels are live.</div>
+  <div class="footer-note" id="footerNote">Meta only, Phase 1. TikTok and Google Ads will appear here once their funnels are live.</div>
 </div>
 
 <script>
@@ -212,6 +238,11 @@ function daysAgoStr(n) {
 // floor for "All time" and as the default lower bound for the date pickers.
 let earliestDataDate = null;
 
+// Which tab is active: "meta" | "tiktok" | "google" | "main_funnel". Drives
+// which Supabase rows get fetched (source_tag / platform filter) and which
+// section of the page renders.
+let currentPlatform = "meta";
+
 const FILE_ORIGIN_HINT = "This page may be blocked from making network requests because it's open as a local file (file://). Try: (1) opening the deployed Netlify URL instead, or (2) running a local server in this folder, e.g. `python3 -m http.server 8000` then visiting http://localhost:8000/index.html.";
 
 function withTimeout(promise, ms, label) {
@@ -222,18 +253,20 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+// Earliest date across BOTH ad spend (Meta/TikTok/Google) and GHL funnel
+// events (Main Funnel has no ad spend at all), so the shared date picker's
+// "All time" floor covers every tab correctly.
 async function getEarliestDate() {
   if (earliestDataDate) return earliestDataDate;
   try {
-    const { data, error } = await withTimeout(
-      sb.from("ad_spend_daily").select("date").order("date", { ascending: true }).limit(1),
-      10000, "Supabase (earliest date)"
-    );
-    if (!error && data && data.length > 0) {
-      earliestDataDate = data[0].date;
-    } else {
-      earliestDataDate = daysAgoStr(90);
-    }
+    const [spendRes, eventRes] = await Promise.all([
+      withTimeout(sb.from("ad_spend_daily").select("date").order("date", { ascending: true }).limit(1), 10000, "ad_spend_daily earliest"),
+      withTimeout(sb.from("ghl_funnel_events").select("event_timestamp").order("event_timestamp", { ascending: true }).limit(1), 10000, "ghl_funnel_events earliest"),
+    ]);
+    const candidates = [];
+    if (!spendRes.error && spendRes.data && spendRes.data.length > 0) candidates.push(spendRes.data[0].date);
+    if (!eventRes.error && eventRes.data && eventRes.data.length > 0) candidates.push(String(eventRes.data[0].event_timestamp).slice(0, 10));
+    earliestDataDate = candidates.length > 0 ? candidates.sort()[0] : daysAgoStr(90);
   } catch (e) {
     document.getElementById("statusLine").textContent = "Error: " + e.message;
     document.getElementById("statusLine").className = "status err";
@@ -251,19 +284,33 @@ async function loadDashboard(startDate, endDate) {
   rangeLabel.textContent = `Showing ${startDate} through ${endDate}`;
 
   try {
-    const spendQuery = sb.from("ad_spend_daily").select("platform,date,spend,clicks,impressions")
-      .gte("date", startDate).lte("date", endDate).order("date", { ascending: false });
-    const { data: spendRows, error: spendErr } = await withTimeout(spendQuery, 12000, "ad_spend_daily");
-    if (spendErr) throw spendErr;
+    if (currentPlatform === "tiktok" || currentPlatform === "google") {
+      statusLine.textContent = "Not built yet for this channel.";
+      return;
+    }
 
-    const eventsQuery = sb.from("ghl_funnel_events").select("event_type,opportunity_value,event_timestamp")
+    let spendRows = [];
+    if (currentPlatform === "meta") {
+      const spendQuery = sb.from("ad_spend_daily").select("platform,date,spend,clicks,impressions")
+        .eq("platform", "meta")
+        .gte("date", startDate).lte("date", endDate).order("date", { ascending: false });
+      const { data, error } = await withTimeout(spendQuery, 12000, "ad_spend_daily");
+      if (error) throw error;
+      spendRows = data || [];
+    }
+
+    const eventsQuery = sb.from("ghl_funnel_events").select("event_type,event_tag,opportunity_value,event_timestamp")
+      .eq("source_tag", currentPlatform)
       .gte("event_timestamp", startDate).lte("event_timestamp", endDate + "T23:59:59")
       .order("event_timestamp", { ascending: false });
     const { data: eventRows, error: eventErr } = await withTimeout(eventsQuery, 12000, "ghl_funnel_events");
     if (eventErr) throw eventErr;
 
-    render(spendRows || [], eventRows || []);
-    statusLine.textContent = `Last refreshed ${new Date().toLocaleString()} · ${spendRows.length} spend rows · ${eventRows.length} funnel events`;
+    if (currentPlatform === "meta") renderMeta(spendRows, eventRows || []);
+    else if (currentPlatform === "main_funnel") renderMainFunnel(eventRows || []);
+
+    const spendNote = currentPlatform === "meta" ? ` · ${spendRows.length} spend rows` : "";
+    statusLine.textContent = `Last refreshed ${new Date().toLocaleString()}${spendNote} · ${(eventRows || []).length} funnel events`;
   } catch (e) {
     statusLine.textContent = "Error loading data: " + (e.message || e);
     statusLine.className = "status err";
@@ -430,9 +477,9 @@ const CONVERSION_LABELS = {
 // add-on/shop purchase) for the "Assessment -> Patient" funnel metric.
 const NEW_PATIENT_TAGS = new Set(["acuvision in office", "acuvision remote purchase"]);
 
-function render(spendRows, eventRows) {
-  const totalSpend = spendRows.reduce((sum, r) => sum + Number(r.spend || 0), 0);
-
+// Shared tallying logic for both the Meta/paid-channel view and the organic
+// Main Funnel view -- same event_type/event_tag vocabulary either way.
+function tallyEvents(eventRows) {
   const counts = {};
   for (const e of eventRows) {
     if (e.event_type === "conversion") continue; // tallied separately below, keyed by tag
@@ -454,46 +501,116 @@ function render(spendRows, eventRows) {
   const noShow = counts["assessment_no_show"] || 0;
   const pending = Math.max(0, booked - showed - noShow); // booked, appointment hasn't happened yet
 
-  const costPerBooked = booked > 0 ? totalSpend / booked : null;
-  const showRate = booked > 0 ? showed / booked : null;
-  const bookedToPatientRate = booked > 0 ? newPatients / booked : null;
-  const costPerNewPatient = newPatients > 0 ? totalSpend / newPatients : null;
-  const roas = totalSpend > 0 ? totalRevenue / totalSpend : null;
-  const revenuePerAssessment = booked > 0 ? totalRevenue / booked : null;
+  return { booked, showed, noShow, pending, conversions, conversionCounts, totalRevenue, newPatients };
+}
+
+function renderFunnelTable(t) {
+  const funnelBody = document.querySelector("#funnelTable tbody");
+  const funnelRows = [
+    ["Assessment booked", t.booked],
+    ["Assessment showed", t.showed],
+    ["Assessment no-show", t.noShow],
+    ["Pending (appointment not yet happened)", t.pending],
+  ];
+  for (const [tag, label] of Object.entries(CONVERSION_LABELS)) {
+    funnelRows.push([label, t.conversionCounts[tag] || 0]);
+  }
+  funnelBody.innerHTML = funnelRows.map(([label, n]) => `<tr><td>${label}</td><td>${fmtNum(n)}</td></tr>`).join("");
+}
+
+function renderMeta(spendRows, eventRows) {
+  const totalSpend = spendRows.reduce((sum, r) => sum + Number(r.spend || 0), 0);
+  const t = tallyEvents(eventRows);
+
+  const costPerBooked = t.booked > 0 ? totalSpend / t.booked : null;
+  const showRate = t.booked > 0 ? t.showed / t.booked : null;
+  const bookedToPatientRate = t.booked > 0 ? t.newPatients / t.booked : null;
+  const costPerNewPatient = t.newPatients > 0 ? totalSpend / t.newPatients : null;
+  const roas = totalSpend > 0 ? t.totalRevenue / totalSpend : null;
+  const revenuePerAssessment = t.booked > 0 ? t.totalRevenue / t.booked : null;
 
   const grid = document.getElementById("metricsGrid");
   grid.innerHTML = [
     metricCard("Total Ad Spend", fmtMoney(totalSpend)),
-    metricCard("Cost / Assessment Booked", fmtMoney(costPerBooked), `${fmtNum(booked)} booked`),
-    metricCard("Assessment Show Rate", fmtPct(showRate), `${fmtNum(showed)} showed / ${fmtNum(booked)} booked`),
-    metricCard("Assessment → Patient Rate", fmtPct(bookedToPatientRate), `${fmtNum(newPatients)} started treatment`),
+    metricCard("Cost / Assessment Booked", fmtMoney(costPerBooked), `${fmtNum(t.booked)} booked`),
+    metricCard("Assessment Show Rate", fmtPct(showRate), `${fmtNum(t.showed)} showed / ${fmtNum(t.booked)} booked`),
+    metricCard("Assessment → Patient Rate", fmtPct(bookedToPatientRate), `${fmtNum(t.newPatients)} started treatment`),
     metricCard("Cost / New Patient", fmtMoney(costPerNewPatient)),
-    metricCard("ROAS", fmtX(roas), `${fmtMoney(totalRevenue)} revenue tracked`),
+    metricCard("ROAS", fmtX(roas), `${fmtMoney(t.totalRevenue)} revenue tracked`),
     metricCard("Revenue / Assessment Call", fmtMoney(revenuePerAssessment)),
   ].join("");
 
-  const funnelBody = document.querySelector("#funnelTable tbody");
-  const funnelRows = [
-    ["Assessment booked", booked],
-    ["Assessment showed", showed],
-    ["Assessment no-show", noShow],
-    ["Pending (appointment not yet happened)", pending],
-  ];
-  for (const [tag, label] of Object.entries(CONVERSION_LABELS)) {
-    funnelRows.push([label, conversionCounts[tag] || 0]);
-  }
-  funnelBody.innerHTML = funnelRows.map(([label, n]) => `<tr><td>${label}</td><td>${fmtNum(n)}</td></tr>`).join("");
+  renderFunnelTable(t);
 
   lastSpendRows = spendRows;
   renderSpendSection();
+}
+
+// Main Funnel is organic/direct website traffic -- there's no ad spend to
+// attribute, so no cost-per-X metrics or spend calendar, just the funnel and
+// real conversion revenue.
+function renderMainFunnel(eventRows) {
+  const t = tallyEvents(eventRows);
+  const showRate = t.booked > 0 ? t.showed / t.booked : null;
+  const conversionRate = t.booked > 0 ? t.conversions.length / t.booked : null;
+  const revenuePerAssessment = t.booked > 0 ? t.totalRevenue / t.booked : null;
+
+  const grid = document.getElementById("metricsGrid");
+  grid.innerHTML = [
+    metricCard("Assessments Booked", fmtNum(t.booked)),
+    metricCard("Assessment Show Rate", fmtPct(showRate), `${fmtNum(t.showed)} showed / ${fmtNum(t.booked)} booked`),
+    metricCard("Conversions", fmtNum(t.conversions.length), `${fmtNum(t.newPatients)} new patients`),
+    metricCard("Conversion Rate", fmtPct(conversionRate), `${fmtNum(t.conversions.length)} / ${fmtNum(t.booked)} booked`),
+    metricCard("Total Revenue", fmtMoney(t.totalRevenue)),
+    metricCard("Revenue / Assessment Call", fmtMoney(revenuePerAssessment)),
+  ].join("");
+
+  renderFunnelTable(t);
 }
 
 document.getElementById("rangeSelect").addEventListener("change", (e) => {
   applyPreset(e.target.value);
 });
 
+const PLATFORM_LABELS = { meta: "Meta", tiktok: "TikTok", google: "Google Ads", main_funnel: "Main Funnel" };
+const PLATFORM_FUNNEL_HEADING = {
+  meta: "Funnel (Meta / COD)",
+  tiktok: "Funnel (TikTok)",
+  google: "Funnel (Google Ads)",
+  main_funnel: "Funnel (Main Website Funnel)",
+};
+const PLATFORM_FOOTER_NOTE = {
+  meta: "Meta is live (Phase 1). TikTok and Google Ads will appear here once their funnels are live.",
+  tiktok: "TikTok tracking hasn't been built yet.",
+  google: "Google Ads tracking hasn't been built yet.",
+  main_funnel: "Organic/direct website bookings and conversions -- not attributed to any paid channel.",
+};
+
+function updatePlatformUI() {
+  document.querySelector("h1 .pill").textContent = PLATFORM_LABELS[currentPlatform];
+  document.getElementById("funnelHeading").textContent = PLATFORM_FUNNEL_HEADING[currentPlatform];
+  document.getElementById("footerNote").textContent = PLATFORM_FOOTER_NOTE[currentPlatform];
+
+  const isComingSoon = currentPlatform === "tiktok" || currentPlatform === "google";
+  document.getElementById("comingSoonSection").style.display = isComingSoon ? "" : "none";
+  document.getElementById("metricsSection").style.display = isComingSoon ? "none" : "";
+  document.getElementById("funnelSection").style.display = isComingSoon ? "none" : "";
+  document.getElementById("adSpendSection").style.display = (currentPlatform === "meta") ? "" : "none";
+}
+
+document.getElementById("platformTabs").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-platform]");
+  if (!btn) return;
+  currentPlatform = btn.dataset.platform;
+  document.querySelectorAll("#platformTabs button").forEach(b => b.classList.toggle("active", b === btn));
+  updatePlatformUI();
+  const range = currentRange();
+  if (range) loadDashboard(range.start, range.end);
+});
+
 (async function init() {
   try {
+    updatePlatformUI();
     await getEarliestDate();
 
     if (typeof flatpickr === "undefined") {
