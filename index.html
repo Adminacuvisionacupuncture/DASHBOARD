@@ -310,7 +310,7 @@ async function loadDashboard(startDate, endDate) {
       spendRows = data || [];
     }
 
-    let eventsQuery = sb.from("ghl_funnel_events").select("event_type,event_tag,opportunity_value,event_timestamp")
+    let eventsQuery = sb.from("ghl_funnel_events").select("contact_id,event_type,event_tag,opportunity_value,event_timestamp")
       .eq("source_tag", currentPlatform)
       .gte("event_timestamp", startDate).lte("event_timestamp", endDate + "T23:59:59")
       .order("event_timestamp", { ascending: false });
@@ -493,6 +493,22 @@ const NEW_PATIENT_TAGS = new Set(["acuvision in office", "acuvision remote purch
 
 // Shared tallying logic for both the Meta/paid-channel view and the organic
 // Main Funnel view -- same event_type/event_tag vocabulary either way.
+//
+// Per Andy: attribution should reflect a patient's FULL value against the
+// channel that originally acquired them, not just their first transaction --
+// which is already how the backend works (every conversion opportunity for a
+// contact rolls up under that contact's one acquisition channel, summed,
+// however many purchases they make over time). What's new here is splitting
+// that same revenue into two views: the immediate return (first purchase)
+// vs. the long-term value (everything, i.e. LTV) -- both attributed to this
+// channel either way.
+//
+// NOTE: like every other metric on this page, this is scoped to whichever
+// conversion rows fall in the currently selected date range. On "All time"
+// that's a true first-ever-purchase split; on a narrower range (e.g. Last 30
+// days), "first purchase" means the earliest conversion *within that range*
+// for a given contact, which may not be their true first purchase if an
+// earlier one happened before the range started.
 function tallyEvents(eventRows) {
   const counts = {};
   for (const e of eventRows) {
@@ -502,12 +518,22 @@ function tallyEvents(eventRows) {
 
   const conversions = eventRows.filter(e => e.event_type === "conversion");
   const conversionCounts = {};
-  let totalRevenue = 0;
+  let lifetimeRevenue = 0;
+  let firstPurchaseRevenue = 0;
   let newPatients = 0;
+  const byContact = new Map();
   for (const c of conversions) {
     conversionCounts[c.event_tag] = (conversionCounts[c.event_tag] || 0) + 1;
-    if (c.opportunity_value) totalRevenue += Number(c.opportunity_value);
+    const val = c.opportunity_value ? Number(c.opportunity_value) : 0;
+    lifetimeRevenue += val;
     if (NEW_PATIENT_TAGS.has(c.event_tag)) newPatients++;
+    if (!byContact.has(c.contact_id)) byContact.set(c.contact_id, []);
+    byContact.get(c.contact_id).push(c);
+  }
+  for (const [, convs] of byContact) {
+    convs.sort((a, b) => new Date(a.event_timestamp) - new Date(b.event_timestamp));
+    const first = convs[0];
+    firstPurchaseRevenue += first.opportunity_value ? Number(first.opportunity_value) : 0;
   }
 
   const booked = counts["assessment_booked"] || 0;
@@ -515,7 +541,7 @@ function tallyEvents(eventRows) {
   const noShow = counts["assessment_no_show"] || 0;
   const pending = Math.max(0, booked - showed - noShow); // booked, appointment hasn't happened yet
 
-  return { booked, showed, noShow, pending, conversions, conversionCounts, totalRevenue, newPatients };
+  return { booked, showed, noShow, pending, conversions, conversionCounts, lifetimeRevenue, firstPurchaseRevenue, newPatients };
 }
 
 function renderFunnelTable(t) {
@@ -540,8 +566,9 @@ function renderMeta(spendRows, eventRows) {
   const showRate = t.booked > 0 ? t.showed / t.booked : null;
   const bookedToPatientRate = t.booked > 0 ? t.newPatients / t.booked : null;
   const costPerNewPatient = t.newPatients > 0 ? totalSpend / t.newPatients : null;
-  const roas = totalSpend > 0 ? t.totalRevenue / totalSpend : null;
-  const revenuePerAssessment = t.booked > 0 ? t.totalRevenue / t.booked : null;
+  const immediateRoas = totalSpend > 0 ? t.firstPurchaseRevenue / totalSpend : null;
+  const ltvRoas = totalSpend > 0 ? t.lifetimeRevenue / totalSpend : null;
+  const revenuePerAssessment = t.booked > 0 ? t.lifetimeRevenue / t.booked : null;
 
   const grid = document.getElementById("metricsGrid");
   grid.innerHTML = [
@@ -550,8 +577,11 @@ function renderMeta(spendRows, eventRows) {
     metricCard("Assessment Show Rate", fmtPct(showRate), `${fmtNum(t.showed)} showed / ${fmtNum(t.booked)} booked`),
     metricCard("Assessment → Patient Rate", fmtPct(bookedToPatientRate), `${fmtNum(t.newPatients)} started treatment`),
     metricCard("Cost / New Patient", fmtMoney(costPerNewPatient)),
-    metricCard("ROAS", fmtX(roas), `${fmtMoney(t.totalRevenue)} revenue tracked`),
-    metricCard("Revenue / Assessment Call", fmtMoney(revenuePerAssessment)),
+    metricCard("First Purchase Revenue", fmtMoney(t.firstPurchaseRevenue), "Immediate return"),
+    metricCard("Lifetime Patient Revenue (LTV)", fmtMoney(t.lifetimeRevenue), "All revenue from these patients"),
+    metricCard("Immediate ROAS", fmtX(immediateRoas), "First purchase only"),
+    metricCard("Lifetime ROAS", fmtX(ltvRoas), "Full patient LTV"),
+    metricCard("Revenue / Assessment Call (LTV)", fmtMoney(revenuePerAssessment)),
   ].join("");
 
   renderFunnelTable(t);
@@ -567,7 +597,7 @@ function renderMainFunnel(eventRows) {
   const t = tallyEvents(eventRows);
   const showRate = t.booked > 0 ? t.showed / t.booked : null;
   const conversionRate = t.booked > 0 ? t.conversions.length / t.booked : null;
-  const revenuePerAssessment = t.booked > 0 ? t.totalRevenue / t.booked : null;
+  const revenuePerAssessment = t.booked > 0 ? t.lifetimeRevenue / t.booked : null;
 
   const grid = document.getElementById("metricsGrid");
   grid.innerHTML = [
@@ -575,8 +605,9 @@ function renderMainFunnel(eventRows) {
     metricCard("Assessment Show Rate", fmtPct(showRate), `${fmtNum(t.showed)} showed / ${fmtNum(t.booked)} booked`),
     metricCard("Conversions", fmtNum(t.conversions.length), `${fmtNum(t.newPatients)} new patients`),
     metricCard("Conversion Rate", fmtPct(conversionRate), `${fmtNum(t.conversions.length)} / ${fmtNum(t.booked)} booked`),
-    metricCard("Total Revenue", fmtMoney(t.totalRevenue)),
-    metricCard("Revenue / Assessment Call", fmtMoney(revenuePerAssessment)),
+    metricCard("First Purchase Revenue", fmtMoney(t.firstPurchaseRevenue), "Immediate return"),
+    metricCard("Lifetime Patient Revenue (LTV)", fmtMoney(t.lifetimeRevenue), "All revenue from these patients"),
+    metricCard("Revenue / Assessment Call (LTV)", fmtMoney(revenuePerAssessment)),
   ].join("");
 
   renderFunnelTable(t);
