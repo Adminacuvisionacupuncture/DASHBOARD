@@ -500,6 +500,11 @@ const CONVERSION_LABELS = {
 // Which conversion tags count as a genuine new treatment patient (vs. an
 // add-on/shop purchase) for the "Assessment -> Patient" funnel metric.
 const NEW_PATIENT_TAGS = new Set(["acuvision in office", "acuvision remote purchase"]);
+// Shop purchases (supplements/devices bought via the EHI shop) are counted
+// inside lifetime/first-purchase revenue like any other conversion, but also
+// broken out separately so shop revenue doesn't get mistaken for clinical
+// treatment revenue.
+const SHOP_TAG = "acuvision ehi shop";
 
 // Shared tallying logic for both the Meta/paid-channel view and the organic
 // Main Funnel view -- same event_type/event_tag vocabulary either way.
@@ -530,12 +535,14 @@ function tallyEvents(eventRows) {
   const conversionCounts = {};
   let lifetimeRevenue = 0;
   let firstPurchaseRevenue = 0;
+  let shopRevenue = 0;
   let newPatients = 0;
   const byContact = new Map();
   for (const c of conversions) {
     conversionCounts[c.event_tag] = (conversionCounts[c.event_tag] || 0) + 1;
     const val = c.opportunity_value ? Number(c.opportunity_value) : 0;
     lifetimeRevenue += val;
+    if (c.event_tag === SHOP_TAG) shopRevenue += val;
     if (NEW_PATIENT_TAGS.has(c.event_tag)) newPatients++;
     if (!byContact.has(c.contact_id)) byContact.set(c.contact_id, []);
     byContact.get(c.contact_id).push(c);
@@ -551,7 +558,7 @@ function tallyEvents(eventRows) {
   const noShow = counts["assessment_no_show"] || 0;
   const pending = Math.max(0, booked - showed - noShow); // booked, appointment hasn't happened yet
 
-  return { booked, showed, noShow, pending, conversions, conversionCounts, lifetimeRevenue, firstPurchaseRevenue, newPatients };
+  return { booked, showed, noShow, pending, conversions, conversionCounts, lifetimeRevenue, firstPurchaseRevenue, shopRevenue, newPatients };
 }
 
 function renderFunnelTable(t) {
@@ -577,6 +584,7 @@ function renderRevenueInsights(t) {
     metricCard("First Purchase Revenue", fmtMoney(t.firstPurchaseRevenue), "Immediate return"),
     metricCard("Lifetime Patient Revenue (LTV)", fmtMoney(t.lifetimeRevenue), "All revenue from these patients"),
     metricCard("Average Patient Value", fmtMoney(avgPatientValue), "Lifetime revenue per converted patient"),
+    metricCard("Revenue from Shop", fmtMoney(t.shopRevenue), "EHI shop purchases, included above"),
   ].join("");
 }
 
