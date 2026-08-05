@@ -608,6 +608,7 @@ function renderMeta(spendRows, eventRows) {
 
   const grid = document.getElementById("metricsGrid");
   grid.innerHTML = [
+    metricCard("Total Ad Spend", fmtMoney(totalSpend)),
     metricCard("Assessments Booked", fmtNum(t.booked)),
     metricCard("Assessment Show Rate", fmtPct(showRate), `${fmtNum(t.showed)} showed / ${fmtNum(resolved)} concluded (${fmtNum(t.pending)} still pending)`),
     metricCard("Conversions", fmtNum(t.conversions.length), `${fmtNum(t.newPatients)} new patients`),
