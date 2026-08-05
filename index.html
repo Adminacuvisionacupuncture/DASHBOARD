@@ -593,7 +593,12 @@ function renderMeta(spendRows, eventRows) {
   const t = tallyEvents(eventRows);
 
   const costPerBooked = t.booked > 0 ? totalSpend / t.booked : null;
-  const showRate = t.booked > 0 ? t.showed / t.booked : null;
+  // Only count assessments that have actually concluded (showed or no-show).
+  // Bookings with no outcome yet -- whether still in the future or just not
+  // marked yet -- are excluded so the rate reflects real outcomes right now,
+  // not appointments that are still pending.
+  const resolved = t.showed + t.noShow;
+  const showRate = resolved > 0 ? t.showed / resolved : null;
   const bookedToPatientRate = t.booked > 0 ? t.newPatients / t.booked : null;
   const costPerNewPatient = t.newPatients > 0 ? totalSpend / t.newPatients : null;
   const immediateRoas = totalSpend > 0 ? t.firstPurchaseRevenue / totalSpend : null;
@@ -604,7 +609,7 @@ function renderMeta(spendRows, eventRows) {
   const grid = document.getElementById("metricsGrid");
   grid.innerHTML = [
     metricCard("Assessments Booked", fmtNum(t.booked)),
-    metricCard("Assessment Show Rate", fmtPct(showRate), `${fmtNum(t.showed)} showed / ${fmtNum(t.booked)} booked`),
+    metricCard("Assessment Show Rate", fmtPct(showRate), `${fmtNum(t.showed)} showed / ${fmtNum(resolved)} concluded (${fmtNum(t.pending)} still pending)`),
     metricCard("Conversions", fmtNum(t.conversions.length), `${fmtNum(t.newPatients)} new patients`),
     metricCard("Conversion Rate", fmtPct(conversionRate), `${fmtNum(t.conversions.length)} / ${fmtNum(t.booked)} booked`),
     metricCard("Revenue / Assessment Call (LTV)", fmtMoney(revenuePerAssessment)),
@@ -632,14 +637,19 @@ function renderMeta(spendRows, eventRows) {
 // real conversion revenue.
 function renderMainFunnel(eventRows) {
   const t = tallyEvents(eventRows);
-  const showRate = t.booked > 0 ? t.showed / t.booked : null;
+  // Only count assessments that have actually concluded (showed or no-show).
+  // Bookings with no outcome yet -- whether still in the future or just not
+  // marked yet -- are excluded so the rate reflects real outcomes right now,
+  // not appointments that are still pending.
+  const resolved = t.showed + t.noShow;
+  const showRate = resolved > 0 ? t.showed / resolved : null;
   const conversionRate = t.booked > 0 ? t.conversions.length / t.booked : null;
   const revenuePerAssessment = t.booked > 0 ? t.lifetimeRevenue / t.booked : null;
 
   const grid = document.getElementById("metricsGrid");
   grid.innerHTML = [
     metricCard("Assessments Booked", fmtNum(t.booked)),
-    metricCard("Assessment Show Rate", fmtPct(showRate), `${fmtNum(t.showed)} showed / ${fmtNum(t.booked)} booked`),
+    metricCard("Assessment Show Rate", fmtPct(showRate), `${fmtNum(t.showed)} showed / ${fmtNum(resolved)} concluded (${fmtNum(t.pending)} still pending)`),
     metricCard("Conversions", fmtNum(t.conversions.length), `${fmtNum(t.newPatients)} new patients`),
     metricCard("Conversion Rate", fmtPct(conversionRate), `${fmtNum(t.conversions.length)} / ${fmtNum(t.booked)} booked`),
     metricCard("Revenue / Assessment Call (LTV)", fmtMoney(revenuePerAssessment)),
