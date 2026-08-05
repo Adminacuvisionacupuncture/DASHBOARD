@@ -125,6 +125,12 @@
 
   .coming-soon { background: var(--card); border: 1px dashed var(--border); border-radius: 14px; padding: 48px 24px; text-align: center; color: var(--muted); }
   .coming-soon .big { font-size: 16px; font-weight: 700; color: var(--navy-dark); margin-bottom: 6px; }
+
+  .compare-panel { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; box-shadow: 0 1px 3px rgba(38,52,73,0.05); }
+  .compare-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .compare-custom-dates { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .compare-custom-dates .date-group { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+  #compareTable td:nth-child(4) { font-weight: 600; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -147,6 +153,7 @@
         <option value="custom">Custom range</option>
       </select>
       <input type="text" id="dateRange" placeholder="Select date range" readonly />
+      <button id="comparePeriodsBtn" type="button">Compare Periods</button>
     </div>
   </header>
 
@@ -191,6 +198,39 @@
   <section id="adPerformanceSection">
     <h2>Ad Performance</h2>
     <div class="grid" id="adPerformanceGrid"></div>
+  </section>
+
+  <section id="campaignPerfSection">
+    <h2>Campaign Performance</h2>
+    <table id="campaignPerfTable">
+      <thead><tr><th>Campaign</th><th>Spend</th><th>Clicks</th><th>Impressions</th><th>CTR</th><th>CPC</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section id="compareSection" style="display:none">
+    <h2>Period Comparison</h2>
+    <div class="compare-panel">
+      <div class="compare-controls">
+        <select id="comparePreset">
+          <option value="last_week">This week vs. last week</option>
+          <option value="last_month">This month vs. last month</option>
+          <option value="last_7">Last 7 days vs. prior 7 days</option>
+          <option value="last_30">Last 30 days vs. prior 30 days</option>
+          <option value="custom">Custom</option>
+        </select>
+        <div class="compare-custom-dates" id="compareCustomDates" style="display:none">
+          <div class="date-group"><span>Period A:</span> <input type="date" id="compareAStart"> <span>to</span> <input type="date" id="compareAEnd"></div>
+          <div class="date-group"><span>Period B:</span> <input type="date" id="compareBStart"> <span>to</span> <input type="date" id="compareBEnd"></div>
+        </div>
+        <button id="runCompareBtn" type="button">Run Comparison</button>
+      </div>
+      <div class="status" id="compareStatus"></div>
+      <table id="compareTable" style="display:none">
+        <thead><tr><th>Metric</th><th id="compareColAHeader">Period A</th><th id="compareColBHeader">Period B</th><th>Change</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 
   <section id="adSpendSection">
@@ -311,13 +351,22 @@ async function loadDashboard(startDate, endDate) {
     }
 
     let spendRows = [];
+    let campaignRows = [];
     if (currentPlatform === "meta" || currentPlatform === "tiktok") {
       const spendQuery = sb.from("ad_spend_daily").select("platform,date,spend,clicks,impressions")
         .eq("platform", currentPlatform)
         .gte("date", startDate).lte("date", endDate).order("date", { ascending: false });
-      const { data, error } = await withTimeout(spendQuery, 12000, "ad_spend_daily");
+      const campaignQuery = sb.from("ad_campaign_performance_daily").select("campaign_id,campaign_name,date,spend,clicks,impressions")
+        .eq("platform", currentPlatform)
+        .gte("date", startDate).lte("date", endDate);
+      const [{ data, error }, { data: campData, error: campErr }] = await Promise.all([
+        withTimeout(spendQuery, 12000, "ad_spend_daily"),
+        withTimeout(campaignQuery, 15000, "ad_campaign_performance_daily"),
+      ]);
       if (error) throw error;
+      if (campErr) throw campErr;
       spendRows = data || [];
+      campaignRows = campData || [];
     }
 
     let eventsQuery = sb.from("ghl_funnel_events").select("contact_id,event_type,event_tag,opportunity_value,event_timestamp")
@@ -330,8 +379,10 @@ async function loadDashboard(startDate, endDate) {
     const { data: eventRows, error: eventErr } = await withTimeout(eventsQuery, 25000, "ghl_funnel_events");
     if (eventErr) throw eventErr;
 
-    if (currentPlatform === "meta" || currentPlatform === "tiktok") renderMeta(spendRows, eventRows || []);
-    else if (currentPlatform === "main_funnel") renderMainFunnel(eventRows || []);
+    if (currentPlatform === "meta" || currentPlatform === "tiktok") {
+      renderMeta(spendRows, eventRows || []);
+      renderCampaignPerformance(campaignRows);
+    } else if (currentPlatform === "main_funnel") renderMainFunnel(eventRows || []);
 
     const spendNote = (currentPlatform === "meta" || currentPlatform === "tiktok") ? ` · ${spendRows.length} spend rows` : "";
     statusLine.textContent = `Last refreshed ${new Date().toLocaleString()}${spendNote} · ${(eventRows || []).length} funnel events`;
@@ -588,6 +639,44 @@ function renderRevenueInsights(t) {
   ].join("");
 }
 
+// Campaign-level clicks/CTR/CPC table -- rows are per-campaign-per-day from
+// ad_campaign_performance_daily, aggregated client-side to one row per
+// campaign for the selected date range. CTR/CPC are recomputed from the
+// aggregated totals (not averaged from the stored per-day ctr/cpc) so they
+// stay accurate across multi-day ranges.
+function renderCampaignPerformance(rows) {
+  const tbody = document.querySelector("#campaignPerfTable tbody");
+  if (!tbody) return;
+  if (!rows || rows.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px;">No campaign data in range</td></tr>`;
+    return;
+  }
+  const byCampaign = new Map();
+  for (const r of rows) {
+    const key = r.campaign_id;
+    if (!byCampaign.has(key)) byCampaign.set(key, { name: r.campaign_name || key, spend: 0, clicks: 0, impressions: 0 });
+    const c = byCampaign.get(key);
+    c.spend += Number(r.spend || 0);
+    c.clicks += Number(r.clicks || 0);
+    c.impressions += Number(r.impressions || 0);
+    if (r.campaign_name) c.name = r.campaign_name;
+  }
+  const list = Array.from(byCampaign.values()).sort((a, b) => b.spend - a.spend);
+  const totals = list.reduce((acc, c) => ({
+    spend: acc.spend + c.spend, clicks: acc.clicks + c.clicks, impressions: acc.impressions + c.impressions,
+  }), { spend: 0, clicks: 0, impressions: 0 });
+
+  const rowsHtml = list.map(c => {
+    const ctr = c.impressions > 0 ? c.clicks / c.impressions : null;
+    const cpc = c.clicks > 0 ? c.spend / c.clicks : null;
+    return `<tr><td>${c.name}</td><td>${fmtMoney(c.spend)}</td><td>${fmtNum(c.clicks)}</td><td>${fmtNum(c.impressions)}</td><td>${fmtPct(ctr)}</td><td>${fmtMoney(cpc)}</td></tr>`;
+  }).join("");
+
+  const totalCtr = totals.impressions > 0 ? totals.clicks / totals.impressions : null;
+  const totalCpc = totals.clicks > 0 ? totals.spend / totals.clicks : null;
+  tbody.innerHTML = rowsHtml + `<tr style="font-weight:700;background:#f8f9fc;"><td>Total</td><td>${fmtMoney(totals.spend)}</td><td>${fmtNum(totals.clicks)}</td><td>${fmtNum(totals.impressions)}</td><td>${fmtPct(totalCtr)}</td><td>${fmtMoney(totalCpc)}</td></tr>`;
+}
+
 function renderMeta(spendRows, eventRows) {
   const totalSpend = spendRows.reduce((sum, r) => sum + Number(r.spend || 0), 0);
   const t = tallyEvents(eventRows);
@@ -661,6 +750,193 @@ function renderMainFunnel(eventRows) {
   renderFunnelTable(t);
 }
 
+// ---------------- Period comparison ----------------
+//
+// Fetches the same set of derived metrics used in the single-period view
+// (renderMeta / renderMainFunnel), but for an arbitrary [startDate, endDate]
+// window and without touching the DOM -- lets the compare panel run two of
+// these in parallel (Period A, Period B) and render them side by side.
+// Scoped to the currently selected platform tab, same as the rest of the
+// dashboard.
+async function fetchPeriodMetrics(startDate, endDate) {
+  let totalSpend = 0;
+  let clicks = null, impressions = null, ctr = null, cpc = null;
+  const hasSpend = currentPlatform === "meta" || currentPlatform === "tiktok";
+
+  if (hasSpend) {
+    const [{ data: spendData, error: spendErr }, { data: campData, error: campErr }] = await Promise.all([
+      sb.from("ad_spend_daily").select("spend").eq("platform", currentPlatform).gte("date", startDate).lte("date", endDate),
+      sb.from("ad_campaign_performance_daily").select("clicks,impressions").eq("platform", currentPlatform).gte("date", startDate).lte("date", endDate),
+    ]);
+    if (spendErr) throw spendErr;
+    if (campErr) throw campErr;
+    totalSpend = (spendData || []).reduce((s, r) => s + Number(r.spend || 0), 0);
+    clicks = (campData || []).reduce((s, r) => s + Number(r.clicks || 0), 0);
+    impressions = (campData || []).reduce((s, r) => s + Number(r.impressions || 0), 0);
+    ctr = impressions > 0 ? clicks / impressions : null;
+    cpc = clicks > 0 ? totalSpend / clicks : null;
+  }
+
+  let eventsQuery = sb.from("ghl_funnel_events").select("contact_id,event_type,event_tag,opportunity_value,event_timestamp")
+    .eq("source_tag", currentPlatform)
+    .gte("event_timestamp", startDate).lte("event_timestamp", endDate + "T23:59:59");
+  if (currentPlatform === "main_funnel" && mainFunnelSubChannel !== "all") {
+    eventsQuery = eventsQuery.eq("sub_channel", mainFunnelSubChannel);
+  }
+  const { data: eventRows, error: eventErr } = await eventsQuery;
+  if (eventErr) throw eventErr;
+
+  const t = tallyEvents(eventRows || []);
+  const resolved = t.showed + t.noShow;
+  const showRate = resolved > 0 ? t.showed / resolved : null;
+  const conversionRate = t.booked > 0 ? t.conversions.length / t.booked : null;
+  const revenuePerAssessment = t.booked > 0 ? t.lifetimeRevenue / t.booked : null;
+  const costPerBooked = hasSpend && t.booked > 0 ? totalSpend / t.booked : null;
+  const costPerNewPatient = hasSpend && t.newPatients > 0 ? totalSpend / t.newPatients : null;
+  const immediateRoas = hasSpend && totalSpend > 0 ? t.firstPurchaseRevenue / totalSpend : null;
+  const ltvRoas = hasSpend && totalSpend > 0 ? t.lifetimeRevenue / totalSpend : null;
+
+  return {
+    totalSpend, booked: t.booked, showRate, conversions: t.conversions.length, conversionRate,
+    revenuePerAssessment, totalRevenue: t.lifetimeRevenue, costPerBooked, costPerNewPatient,
+    immediateRoas, ltvRoas, clicks, impressions, ctr, cpc,
+  };
+}
+
+// Calendar-based preset windows. "This week"/"This month" are partial (up to
+// today), so their prior-period counterpart is trimmed to the same number of
+// days/same day-of-month for an apples-to-apples comparison rather than
+// comparing a partial period to a full one.
+function computePresetRanges(preset) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const fmt = ymdLocal;
+
+  if (preset === "last_7") {
+    const aEnd = new Date(today), aStart = new Date(today); aStart.setDate(aStart.getDate() - 6);
+    const bEnd = new Date(today); bEnd.setDate(bEnd.getDate() - 7);
+    const bStart = new Date(bEnd); bStart.setDate(bStart.getDate() - 6);
+    return { aStart: fmt(aStart), aEnd: fmt(aEnd), bStart: fmt(bStart), bEnd: fmt(bEnd), aLabel: "Last 7 days", bLabel: "Prior 7 days" };
+  }
+  if (preset === "last_30") {
+    const aEnd = new Date(today), aStart = new Date(today); aStart.setDate(aStart.getDate() - 29);
+    const bEnd = new Date(today); bEnd.setDate(bEnd.getDate() - 30);
+    const bStart = new Date(bEnd); bStart.setDate(bStart.getDate() - 29);
+    return { aStart: fmt(aStart), aEnd: fmt(aEnd), bStart: fmt(bStart), bEnd: fmt(bEnd), aLabel: "Last 30 days", bLabel: "Prior 30 days" };
+  }
+  if (preset === "last_week") {
+    const dow = today.getDay();
+    const currentWeekStart = new Date(today); currentWeekStart.setDate(today.getDate() - dow);
+    const bStart = new Date(currentWeekStart); bStart.setDate(bStart.getDate() - 7);
+    const bEnd = new Date(bStart); bEnd.setDate(bEnd.getDate() + dow);
+    return { aStart: fmt(currentWeekStart), aEnd: fmt(today), bStart: fmt(bStart), bEnd: fmt(bEnd), aLabel: "This week", bLabel: "Last week (same days)" };
+  }
+  if (preset === "last_month") {
+    const aStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    const bStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const bEndDay = Math.min(today.getDate(), new Date(today.getFullYear(), today.getMonth(), 0).getDate());
+    const bEnd = new Date(today.getFullYear(), today.getMonth() - 1, bEndDay);
+    return { aStart: fmt(aStart), aEnd: fmt(today), bStart: fmt(bStart), bEnd: fmt(bEnd), aLabel: "This month", bLabel: "Last month (same days)" };
+  }
+  return null; // custom -- handled by caller using the date inputs directly
+}
+
+function formatChange(aVal, bVal) {
+  if (aVal === null || bVal === null || aVal === undefined || bVal === undefined || isNaN(aVal) || isNaN(bVal)) return "—";
+  const diff = aVal - bVal;
+  if (bVal === 0) {
+    if (diff === 0) return "→ no change";
+    return diff > 0 ? "▲ new" : "▼";
+  }
+  const pct = (diff / Math.abs(bVal)) * 100;
+  const arrow = pct > 0.05 ? "▲" : pct < -0.05 ? "▼" : "→";
+  return `${arrow} ${Math.abs(pct).toFixed(1)}%`;
+}
+
+function buildCompareRows(a, b) {
+  const hasSpend = currentPlatform === "meta" || currentPlatform === "tiktok";
+  const rows = [];
+  if (hasSpend) rows.push(["Total Ad Spend", a.totalSpend, b.totalSpend, fmtMoney]);
+  rows.push(["Assessments Booked", a.booked, b.booked, fmtNum]);
+  rows.push(["Assessment Show Rate", a.showRate, b.showRate, fmtPct]);
+  rows.push(["Conversions", a.conversions, b.conversions, fmtNum]);
+  rows.push(["Conversion Rate", a.conversionRate, b.conversionRate, fmtPct]);
+  rows.push(["Total Revenue", a.totalRevenue, b.totalRevenue, fmtMoney]);
+  rows.push(["Revenue / Assessment (LTV)", a.revenuePerAssessment, b.revenuePerAssessment, fmtMoney]);
+  if (hasSpend) {
+    rows.push(["Clicks", a.clicks, b.clicks, fmtNum]);
+    rows.push(["Impressions", a.impressions, b.impressions, fmtNum]);
+    rows.push(["CTR", a.ctr, b.ctr, fmtPct]);
+    rows.push(["CPC", a.cpc, b.cpc, fmtMoney]);
+    rows.push(["Cost / Assessment Booked", a.costPerBooked, b.costPerBooked, fmtMoney]);
+    rows.push(["Cost / New Patient", a.costPerNewPatient, b.costPerNewPatient, fmtMoney]);
+    rows.push(["Immediate ROAS", a.immediateRoas, b.immediateRoas, fmtX]);
+    rows.push(["Lifetime ROAS", a.ltvRoas, b.ltvRoas, fmtX]);
+  }
+  return rows;
+}
+
+async function runComparison() {
+  const statusEl = document.getElementById("compareStatus");
+  const table = document.getElementById("compareTable");
+  const preset = document.getElementById("comparePreset").value;
+
+  if (currentPlatform === "google") {
+    statusEl.textContent = "Not available for this channel yet.";
+    table.style.display = "none";
+    return;
+  }
+
+  let ranges;
+  if (preset === "custom") {
+    const aStart = document.getElementById("compareAStart").value;
+    const aEnd = document.getElementById("compareAEnd").value;
+    const bStart = document.getElementById("compareBStart").value;
+    const bEnd = document.getElementById("compareBEnd").value;
+    if (!aStart || !aEnd || !bStart || !bEnd) {
+      statusEl.textContent = "Pick all four custom dates, then run the comparison.";
+      table.style.display = "none";
+      return;
+    }
+    ranges = { aStart, aEnd, bStart, bEnd, aLabel: "Period A", bLabel: "Period B" };
+  } else {
+    ranges = computePresetRanges(preset);
+  }
+
+  statusEl.textContent = "Loading comparison...";
+  table.style.display = "none";
+  try {
+    const [a, b] = await Promise.all([
+      fetchPeriodMetrics(ranges.aStart, ranges.aEnd),
+      fetchPeriodMetrics(ranges.bStart, ranges.bEnd),
+    ]);
+    document.getElementById("compareColAHeader").textContent = `${ranges.aLabel} (${ranges.aStart} to ${ranges.aEnd})`;
+    document.getElementById("compareColBHeader").textContent = `${ranges.bLabel} (${ranges.bStart} to ${ranges.bEnd})`;
+    const rows = buildCompareRows(a, b);
+    document.querySelector("#compareTable tbody").innerHTML = rows.map(([label, aVal, bVal, fmt]) =>
+      `<tr><td>${label}</td><td>${fmt(aVal)}</td><td>${fmt(bVal)}</td><td>${formatChange(aVal, bVal)}</td></tr>`
+    ).join("");
+    table.style.display = "";
+    statusEl.textContent = `Compared ${ranges.aLabel} vs. ${ranges.bLabel}.`;
+  } catch (e) {
+    statusEl.textContent = "Error loading comparison: " + (e.message || e);
+    console.error(e);
+  }
+}
+
+document.getElementById("comparePeriodsBtn").addEventListener("click", () => {
+  const section = document.getElementById("compareSection");
+  const isHidden = section.style.display === "none" || !section.style.display;
+  section.style.display = isHidden ? "" : "none";
+  if (isHidden) runComparison();
+});
+
+document.getElementById("comparePreset").addEventListener("change", (e) => {
+  document.getElementById("compareCustomDates").style.display = e.target.value === "custom" ? "flex" : "none";
+  if (e.target.value !== "custom") runComparison();
+});
+
+document.getElementById("runCompareBtn").addEventListener("click", runComparison);
+
 document.getElementById("rangeSelect").addEventListener("change", (e) => {
   applyPreset(e.target.value);
 });
@@ -690,8 +966,11 @@ function updatePlatformUI() {
   document.getElementById("funnelSection").style.display = isComingSoon ? "none" : "";
   document.getElementById("revenueInsightsSection").style.display = isComingSoon ? "none" : "";
   document.getElementById("adPerformanceSection").style.display = (currentPlatform === "meta" || currentPlatform === "tiktok") ? "" : "none";
+  document.getElementById("campaignPerfSection").style.display = (currentPlatform === "meta" || currentPlatform === "tiktok") ? "" : "none";
   document.getElementById("adSpendSection").style.display = (currentPlatform === "meta" || currentPlatform === "tiktok") ? "" : "none";
   document.getElementById("subChannelToggle").style.display = (currentPlatform === "main_funnel") ? "flex" : "none";
+  document.getElementById("comparePeriodsBtn").style.display = isComingSoon ? "none" : "";
+  document.getElementById("compareSection").style.display = "none"; // reset -- avoids showing a stale comparison from a different platform
 }
 
 document.getElementById("subChannelToggle").addEventListener("click", (e) => {
