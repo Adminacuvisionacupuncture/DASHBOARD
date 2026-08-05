@@ -305,15 +305,15 @@ async function loadDashboard(startDate, endDate) {
   rangeLabel.textContent = `Showing ${startDate} through ${endDate}`;
 
   try {
-    if (currentPlatform === "tiktok" || currentPlatform === "google") {
+    if (currentPlatform === "google") {
       statusLine.textContent = "Not built yet for this channel.";
       return;
     }
 
     let spendRows = [];
-    if (currentPlatform === "meta") {
+    if (currentPlatform === "meta" || currentPlatform === "tiktok") {
       const spendQuery = sb.from("ad_spend_daily").select("platform,date,spend,clicks,impressions")
-        .eq("platform", "meta")
+        .eq("platform", currentPlatform)
         .gte("date", startDate).lte("date", endDate).order("date", { ascending: false });
       const { data, error } = await withTimeout(spendQuery, 12000, "ad_spend_daily");
       if (error) throw error;
@@ -330,10 +330,10 @@ async function loadDashboard(startDate, endDate) {
     const { data: eventRows, error: eventErr } = await withTimeout(eventsQuery, 25000, "ghl_funnel_events");
     if (eventErr) throw eventErr;
 
-    if (currentPlatform === "meta") renderMeta(spendRows, eventRows || []);
+    if (currentPlatform === "meta" || currentPlatform === "tiktok") renderMeta(spendRows, eventRows || []);
     else if (currentPlatform === "main_funnel") renderMainFunnel(eventRows || []);
 
-    const spendNote = currentPlatform === "meta" ? ` · ${spendRows.length} spend rows` : "";
+    const spendNote = (currentPlatform === "meta" || currentPlatform === "tiktok") ? ` · ${spendRows.length} spend rows` : "";
     statusLine.textContent = `Last refreshed ${new Date().toLocaleString()}${spendNote} · ${(eventRows || []).length} funnel events`;
   } catch (e) {
     statusLine.textContent = "Error loading data: " + (e.message || e);
@@ -672,8 +672,8 @@ const PLATFORM_FUNNEL_HEADING = {
   main_funnel: "Funnel (Main Website Funnel)",
 };
 const PLATFORM_FOOTER_NOTE = {
-  meta: "Meta is live (Phase 1). TikTok and Google Ads will appear here once their funnels are live.",
-  tiktok: "TikTok tracking hasn't been built yet.",
+  meta: "Meta is live. Google Ads will appear here once its funnel is live.",
+  tiktok: "TikTok is live -- ad spend and funnel tracking are both active.",
   google: "Google Ads tracking hasn't been built yet.",
   main_funnel: "Organic/direct website bookings and conversions -- not attributed to any paid channel.",
 };
@@ -683,13 +683,13 @@ function updatePlatformUI() {
   document.getElementById("funnelHeading").textContent = PLATFORM_FUNNEL_HEADING[currentPlatform];
   document.getElementById("footerNote").textContent = PLATFORM_FOOTER_NOTE[currentPlatform];
 
-  const isComingSoon = currentPlatform === "tiktok" || currentPlatform === "google";
+  const isComingSoon = currentPlatform === "google";
   document.getElementById("comingSoonSection").style.display = isComingSoon ? "" : "none";
   document.getElementById("metricsSection").style.display = isComingSoon ? "none" : "";
   document.getElementById("funnelSection").style.display = isComingSoon ? "none" : "";
   document.getElementById("revenueInsightsSection").style.display = isComingSoon ? "none" : "";
-  document.getElementById("adPerformanceSection").style.display = (currentPlatform === "meta") ? "" : "none";
-  document.getElementById("adSpendSection").style.display = (currentPlatform === "meta") ? "" : "none";
+  document.getElementById("adPerformanceSection").style.display = (currentPlatform === "meta" || currentPlatform === "tiktok") ? "" : "none";
+  document.getElementById("adSpendSection").style.display = (currentPlatform === "meta" || currentPlatform === "tiktok") ? "" : "none";
   document.getElementById("subChannelToggle").style.display = (currentPlatform === "main_funnel") ? "flex" : "none";
 }
 
