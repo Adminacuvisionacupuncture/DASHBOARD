@@ -610,13 +610,14 @@ function applyPreset(preset) {
 const CONVERSION_LABELS = {
   "acuvision in office": "In-office treatment purchased",
   "acuvision remote purchase": "Remote clinic purchased",
+  "acuvision telehealth purchase": "Telehealth treatment purchased",
   "acuvision acs in office price": "ACS purchased (in-office add-on)",
   "acuvision acs sale": "ACS purchased (standalone)",
   "acuvision ehi shop": "EHI shop purchase",
 };
 // Which conversion tags count as a genuine new treatment patient (vs. an
 // add-on/shop purchase) for the "Assessment -> Patient" funnel metric.
-const NEW_PATIENT_TAGS = new Set(["acuvision in office", "acuvision remote purchase"]);
+const NEW_PATIENT_TAGS = new Set(["acuvision in office", "acuvision remote purchase", "acuvision telehealth purchase"]);
 // Shop purchases (supplements/devices bought via the EHI shop) are counted
 // inside lifetime/first-purchase revenue like any other conversion, but also
 // broken out separately so shop revenue doesn't get mistaken for clinical
