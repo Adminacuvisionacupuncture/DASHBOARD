@@ -176,11 +176,6 @@
 
   <div class="status" id="statusLine">Connecting to Supabase...</div>
 
-  <div id="comingSoonSection" class="coming-soon" style="display:none">
-    <div class="big">Not built yet</div>
-    <div>This channel's tracking pipeline hasn't been wired up. It'll appear here once it's live.</div>
-  </div>
-
   <div class="view-toggle" id="subChannelToggle" style="display:none; width: fit-content; margin-bottom: 16px;">
     <button data-sub="all" class="active">All</button>
     <button data-sub="normal">Normal</button>
@@ -402,34 +397,35 @@ async function loadDashboard(startDate, endDate) {
   statusLine.className = "status";
   rangeLabel.textContent = `Showing ${startDate} through ${endDate}`;
 
-  try {
-    if (currentPlatform === "google") {
-      statusLine.textContent = "Not built yet for this channel.";
-      return;
-    }
+  const hasAdSpend = currentPlatform === "meta" || currentPlatform === "tiktok" || currentPlatform === "google";
+  const hasCampaignCreative = currentPlatform === "meta" || currentPlatform === "tiktok";
 
+  try {
     let spendRows = [];
     let campaignRows = [];
-    if (currentPlatform === "meta" || currentPlatform === "tiktok") {
+    if (hasAdSpend) {
       const spendQuery = sb.from("ad_spend_daily").select("platform,date,spend,clicks,impressions")
         .eq("platform", currentPlatform)
         .gte("date", startDate).lte("date", endDate).order("date", { ascending: false });
-      const campaignQuery = sb.from("ad_campaign_performance_daily").select("campaign_id,campaign_name,date,spend,clicks,impressions")
-        .eq("platform", currentPlatform)
-        .gte("date", startDate).lte("date", endDate);
-      const [{ data, error }, { data: campData, error: campErr }] = await Promise.all([
-        withTimeout(spendQuery, 12000, "ad_spend_daily"),
-        withTimeout(campaignQuery, 15000, "ad_campaign_performance_daily"),
-      ]);
-      if (error) throw error;
-      if (campErr) throw campErr;
-      spendRows = data || [];
-      campaignRows = campData || [];
+      const queries = [withTimeout(spendQuery, 12000, "ad_spend_daily")];
+      if (hasCampaignCreative) {
+        const campaignQuery = sb.from("ad_campaign_performance_daily").select("campaign_id,campaign_name,date,spend,clicks,impressions")
+          .eq("platform", currentPlatform)
+          .gte("date", startDate).lte("date", endDate);
+        queries.push(withTimeout(campaignQuery, 15000, "ad_campaign_performance_daily"));
+      }
+      const [spendResult, campaignResult] = await Promise.all(queries);
+      if (spendResult.error) throw spendResult.error;
+      spendRows = spendResult.data || [];
+      if (hasCampaignCreative) {
+        if (campaignResult.error) throw campaignResult.error;
+        campaignRows = campaignResult.data || [];
+      }
     }
 
     let creativeRows = [];
     let creativeStatusData = null;
-    if (currentPlatform === "meta" || currentPlatform === "tiktok") {
+    if (hasCampaignCreative) {
       const creativeQuery = sb.from("ad_creative_performance_daily").select("ad_id,ad_name,campaign_name,date,spend,clicks,impressions")
         .eq("platform", currentPlatform)
         .gte("date", startDate).lte("date", endDate);
@@ -447,14 +443,14 @@ async function loadDashboard(startDate, endDate) {
     const t = tallyEventsCohort(allEventRows, startDate, endDate);
     const periodConv = tallyConversionsByPeriod(allEventRows, startDate, endDate);
 
-    if (currentPlatform === "meta" || currentPlatform === "tiktok") {
+    if (hasAdSpend) {
       renderMeta(spendRows, t, periodConv);
-      renderCampaignPerformance(campaignRows);
+      if (hasCampaignCreative) renderCampaignPerformance(campaignRows);
     } else if (currentPlatform === "main_funnel") renderMainFunnel(t, periodConv);
 
-    if (currentPlatform === "meta" || currentPlatform === "tiktok") renderCreativePerformance(creativeRows, creativeStatusData, currentPlatform);
+    if (hasCampaignCreative) renderCreativePerformance(creativeRows, creativeStatusData, currentPlatform);
 
-    const spendNote = (currentPlatform === "meta" || currentPlatform === "tiktok") ? ` · ${spendRows.length} spend rows` : "";
+    const spendNote = hasAdSpend ? ` · ${spendRows.length} spend rows` : "";
     statusLine.textContent = `Last refreshed ${new Date().toLocaleString()}${spendNote} · ${t.booked} booked in range (${t.conversions.length} of them converted so far) · ${periodConv.conversions.length} conversions recorded in this range`;
   } catch (e) {
     statusLine.textContent = "Error loading data: " + (e.message || e);
@@ -969,20 +965,24 @@ function renderMainFunnel(t, periodConv) {
 async function fetchPeriodMetrics(startDate, endDate) {
   let totalSpend = 0;
   let clicks = null, impressions = null, ctr = null, cpc = null;
-  const hasSpend = currentPlatform === "meta" || currentPlatform === "tiktok";
+  const hasSpend = currentPlatform === "meta" || currentPlatform === "tiktok" || currentPlatform === "google";
+  const hasCampaignData = currentPlatform === "meta" || currentPlatform === "tiktok";
 
   if (hasSpend) {
-    const [{ data: spendData, error: spendErr }, { data: campData, error: campErr }] = await Promise.all([
-      sb.from("ad_spend_daily").select("spend").eq("platform", currentPlatform).gte("date", startDate).lte("date", endDate),
-      sb.from("ad_campaign_performance_daily").select("clicks,impressions").eq("platform", currentPlatform).gte("date", startDate).lte("date", endDate),
-    ]);
+    const spendPromise = sb.from("ad_spend_daily").select("spend").eq("platform", currentPlatform).gte("date", startDate).lte("date", endDate);
+    const campaignPromise = hasCampaignData
+      ? sb.from("ad_campaign_performance_daily").select("clicks,impressions").eq("platform", currentPlatform).gte("date", startDate).lte("date", endDate)
+      : Promise.resolve({ data: [], error: null });
+    const [{ data: spendData, error: spendErr }, { data: campData, error: campErr }] = await Promise.all([spendPromise, campaignPromise]);
     if (spendErr) throw spendErr;
     if (campErr) throw campErr;
     totalSpend = (spendData || []).reduce((s, r) => s + Number(r.spend || 0), 0);
-    clicks = (campData || []).reduce((s, r) => s + Number(r.clicks || 0), 0);
-    impressions = (campData || []).reduce((s, r) => s + Number(r.impressions || 0), 0);
-    ctr = impressions > 0 ? clicks / impressions : null;
-    cpc = clicks > 0 ? totalSpend / clicks : null;
+    if (hasCampaignData) {
+      clicks = (campData || []).reduce((s, r) => s + Number(r.clicks || 0), 0);
+      impressions = (campData || []).reduce((s, r) => s + Number(r.impressions || 0), 0);
+      ctr = impressions > 0 ? clicks / impressions : null;
+      cpc = clicks > 0 ? totalSpend / clicks : null;
+    }
   }
 
   const allEventRows = await getEventRowsCached(currentPlatform, mainFunnelSubChannel);
@@ -1058,7 +1058,8 @@ function formatChange(aVal, bVal) {
 }
 
 function buildCompareRows(a, b) {
-  const hasSpend = currentPlatform === "meta" || currentPlatform === "tiktok";
+  const hasSpend = currentPlatform === "meta" || currentPlatform === "tiktok" || currentPlatform === "google";
+  const hasCampaignData = currentPlatform === "meta" || currentPlatform === "tiktok";
   const rows = [];
   if (hasSpend) rows.push(["Total Ad Spend", a.totalSpend, b.totalSpend, fmtMoney]);
   rows.push(["Assessments Booked", a.booked, b.booked, fmtNum]);
@@ -1067,11 +1068,13 @@ function buildCompareRows(a, b) {
   rows.push(["Conversion Rate", a.conversionRate, b.conversionRate, fmtPct]);
   rows.push(["Total Revenue", a.totalRevenue, b.totalRevenue, fmtMoney]);
   rows.push(["Revenue / Assessment (LTV)", a.revenuePerAssessment, b.revenuePerAssessment, fmtMoney]);
-  if (hasSpend) {
+  if (hasCampaignData) {
     rows.push(["Clicks", a.clicks, b.clicks, fmtNum]);
     rows.push(["Impressions", a.impressions, b.impressions, fmtNum]);
     rows.push(["CTR", a.ctr, b.ctr, fmtPct]);
     rows.push(["CPC", a.cpc, b.cpc, fmtMoney]);
+  }
+  if (hasSpend) {
     rows.push(["Cost / Assessment Booked", a.costPerBooked, b.costPerBooked, fmtMoney]);
     rows.push(["Cost / New Patient", a.costPerNewPatient, b.costPerNewPatient, fmtMoney]);
     rows.push(["Immediate ROAS", a.immediateRoas, b.immediateRoas, fmtX]);
@@ -1084,12 +1087,6 @@ async function runComparison() {
   const statusEl = document.getElementById("compareStatus");
   const table = document.getElementById("compareTable");
   const preset = document.getElementById("comparePreset").value;
-
-  if (currentPlatform === "google") {
-    statusEl.textContent = "Not available for this channel yet.";
-    table.style.display = "none";
-    return;
-  }
 
   let ranges;
   if (preset === "custom") {
@@ -1195,7 +1192,7 @@ const PLATFORM_FUNNEL_HEADING = {
 const PLATFORM_FOOTER_NOTE = {
   meta: "Meta is live. Google Ads will appear here once its funnel is live.",
   tiktok: "TikTok is live -- ad spend and funnel tracking are both active.",
-  google: "Google Ads tracking hasn't been built yet.",
+  google: "Google Ads spend tracking is live. Funnel/conversion attribution isn't wired up yet -- booked/conversion numbers below will read zero until GHL bookings are linked to this channel.",
   main_funnel: "Organic/direct website bookings and conversions -- not attributed to any paid channel.",
 };
 
@@ -1204,23 +1201,20 @@ function updatePlatformUI() {
   document.getElementById("funnelHeading").textContent = PLATFORM_FUNNEL_HEADING[currentPlatform];
   document.getElementById("footerNote").textContent = PLATFORM_FOOTER_NOTE[currentPlatform];
 
-  const isComingSoon = currentPlatform === "google";
-  document.getElementById("comingSoonSection").style.display = isComingSoon ? "" : "none";
-  document.getElementById("metricsSection").style.display = isComingSoon ? "none" : "";
-  document.getElementById("funnelSection").style.display = isComingSoon ? "none" : "";
-  document.getElementById("revenueInsightsSection").style.display = isComingSoon ? "none" : "";
-  document.getElementById("adPerformanceSection").style.display = (currentPlatform === "meta" || currentPlatform === "tiktok") ? "" : "none";
-  document.getElementById("campaignPerfSection").style.display = (currentPlatform === "meta" || currentPlatform === "tiktok") ? "" : "none";
-  document.getElementById("creativePerfSection").style.display = (currentPlatform === "meta" || currentPlatform === "tiktok") ? "" : "none";
+  const hasAdSpend = currentPlatform === "meta" || currentPlatform === "tiktok" || currentPlatform === "google";
+  const hasCampaignCreative = currentPlatform === "meta" || currentPlatform === "tiktok";
+
+  document.getElementById("adPerformanceSection").style.display = hasAdSpend ? "" : "none";
+  document.getElementById("campaignPerfSection").style.display = hasCampaignCreative ? "" : "none";
+  document.getElementById("creativePerfSection").style.display = hasCampaignCreative ? "" : "none";
   const creativeNote = document.getElementById("creativePerfNote");
   if (creativeNote) {
     creativeNote.textContent = currentPlatform === "meta"
       ? "Status comes directly from Meta's Ads API -- a real ACTIVE/PAUSED/etc. state, not inferred."
       : "Status is inferred from spend/impressions in the last 2 days of synced data -- TikTok's API doesn't expose a live active/paused flag to this app.";
   }
-  document.getElementById("adSpendSection").style.display = (currentPlatform === "meta" || currentPlatform === "tiktok") ? "" : "none";
+  document.getElementById("adSpendSection").style.display = hasAdSpend ? "" : "none";
   document.getElementById("subChannelToggle").style.display = (currentPlatform === "main_funnel") ? "flex" : "none";
-  document.getElementById("comparePeriodsBtn").style.display = isComingSoon ? "none" : "";
   document.getElementById("compareSection").style.display = "none"; // reset -- avoids showing a stale comparison from a different platform
 }
 
